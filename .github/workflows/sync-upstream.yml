@@ -1,0 +1,63 @@
+# Keeps leandro-snz/rea in sync with morluto/rea.
+#
+# Requires a repository secret named SYNC_TOKEN: a fine-grained personal
+# access token limited to this repository with "Contents: Read and write" and
+# "Workflows: Read and write". The default GITHUB_TOKEN cannot accept upstream
+# commits that touch .github/workflows, which REA changes often.
+#
+# Every upstream workflow is disabled in this fork so that upstream CI, CodeQL,
+# mutation testing, and release jobs never run here. Only this file stays active.
+name: Sync fork with upstream
+
+on:
+  schedule:
+    - cron: "17 */6 * * *" # every 6 hours
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'leandro-snz/rea'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      REPO: ${{ github.repository }}
+      SELF: .github/workflows/sync-upstream.yml
+    steps:
+      - name: Disable upstream workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$REPO/actions/workflows" --paginate \
+            --jq ".workflows[] | select(.state == \"active\" and (.path | startswith(\".github/workflows/\")) and .path != \"$SELF\") | .id" |
+          while read -r id; do
+            gh api -X PUT "repos/$REPO/actions/workflows/$id/disable" && echo "disabled $id" || echo "could not disable $id"
+          done
+
+      - name: Merge upstream main
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Secret SYNC_TOKEN is missing. See the comment at the top of this file."
+            exit 1
+          fi
+          gh api -X POST "repos/$REPO/merge-upstream" -f branch=main \
+            --jq '"result: \(.merge_type) — \(.message)"'
+
+      - name: Disable workflows added by this sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$REPO/actions/workflows" --paginate \
+            --jq ".workflows[] | select(.state == \"active\" and (.path | startswith(\".github/workflows/\")) and .path != \"$SELF\") | .id" |
+          while read -r id; do
+            gh api -X PUT "repos/$REPO/actions/workflows/$id/disable" && echo "disabled $id" || echo "could not disable $id"
+          done
